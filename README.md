@@ -26,16 +26,15 @@ Automatically notifies selected mobile app devices (Android, iOS, macOS) when ne
 
 [![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fharyp2309%2Fha-blueprints%2Fblob%2Fmain%2Fautomations%2Fboosted_heating_sync.yaml)
 
-Synchronizes one or more target heaters with a master room thermostat by applying a proportional boosted temperature offset on top of a reference heater's `current_temperature`:
+Synchronizes one or more target heaters with a master room thermostat by applying a proportional per-heater boosted offset on top of each heater's own `current_temperature`:
 
-$$\text{Target} = \text{clamp}\!\left(\text{Heater}_{\text{current}} + \text{round}\!\left((\text{Master}_{\text{target}} - \text{Master}_{\text{current}}) \times \text{Multiplier}\right),\ \text{min\_temp},\ \text{max\_temp}\right)$$
+$$\text{Target}_i = \text{clamp}\!\left(\text{Heater}_{i,\text{current}} + \text{round}\!\left((\text{Master}_{\text{target}} - \text{Master}_{\text{current}}) \times \text{Boost}_i\right),\ \text{min\_temp}_i,\ \text{max\_temp}_i\right)$$
 
 **Features:**
-- **Master Thermostat & Reference Heater**: Uses the temperature deficit/surplus from a master thermostat and adds the boosted offset to a selected reference heater's `current_temperature`.
-- **Multi-Heater Support**: Updates any number of target `climate` entities.
-- **Configurable Boost Multiplier**: Adjust the proportional gain (default `4`).
+- **Per-Heater Baseline & Boost**: Each target heater uses its own `current_temperature` and either the default boost multiplier (default `4`) or a custom per-heater multiplier configured in `heater_boost_overrides`.
+- **Unlimited Target Heaters**: Select any number of `climate` entities via the entity picker.
 - **Min/Max Temperature Clamping**: Clamps calculated setpoints to each heater's `min_temp` and `max_temp` attributes so `climate.set_temperature` calls never fail out of bounds.
-- **Loop & Traffic Protection**: Debounces changes to the reference heater's `current_temperature` and only sends `climate.set_temperature` when a heater's target temperature actually changes.
+- **Loop & Traffic Protection**: Debounces changes to each heater's `current_temperature` and only sends `climate.set_temperature` when a heater's target temperature actually changes.
 
 ## Manual Import Instructions
 
