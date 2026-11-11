@@ -1,0 +1,130 @@
+blueprint:
+  name: Boosted Heating Sync
+  description: >-
+    Synchronizes one or more target heaters with a master thermostat by applying
+    a boosted temperature offset (based on the difference between the master
+    thermostat's target and current temperatures) on top of a reference heater's
+    current temperature.
+  domain: automation
+  homeassistant:
+    min_version: "2024.6.0"
+  input:
+    master_thermostat:
+      name: Master thermostat
+      description: >-
+        The main room thermostat whose target temperature and current
+        temperature determine the heating demand (temperature difference).
+      selector:
+        entity:
+          domain: climate
+          multiple: false
+    reference_heater:
+      name: Reference heater
+      description: >-
+        The heater climate entity whose current_temperature is used as the
+        baseline for calculating the boosted target temperature.
+      selector:
+        entity:
+          domain: climate
+          multiple: false
+    target_heaters:
+      name: Target heaters
+      description: >-
+        All heater climate entities that should have their target temperature
+        updated to the calculated boosted temperature.
+      selector:
+        entity:
+          domain: climate
+          multiple: true
+    boost_multiplier:
+      name: Boost multiplier
+      description: >-
+        Multiplier applied to the temperature difference between the master
+        thermostat's target and current temperature (e.g., 4 means a 1°C deficit
+        on the master thermostat boosts the heater target by +4°C above the
+        reference heater's current temperature).
+      default: 4
+      selector:
+        number:
+          min: 0.5
+          max: 10
+          step: 0.5
+          mode: slider
+    reference_cooldown_seconds:
+      name: Reference heater sensor cooldown
+      description: >-
+        Minimum time (in seconds) that a change in the reference heater's
+        current_temperature must remain stable before triggering a recalculation
+        (helps avoid rapid feedback loops as the heater warms up).
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 600
+          step: 10
+          unit_of_measurement: s
+          mode: slider
+
+mode: single
+max_exceeded: silent
+
+trigger:
+  - id: master_current
+    platform: state
+    entity_id: !input master_thermostat
+    attribute: current_temperature
+  - id: master_target
+    platform: state
+    entity_id: !input master_thermostat
+    attribute: temperature
+  - id: reference_current
+    platform: state
+    entity_id: !input reference_heater
+    attribute: current_temperature
+    for:
+      seconds: !input reference_cooldown_seconds
+
+variables:
+  master_thermostat: !input master_thermostat
+  reference_heater: !input reference_heater
+  target_heaters: !input target_heaters
+  boost_multiplier: !input boost_multiplier
+  master_target_temp: "{{ state_attr(master_thermostat, 'temperature') }}"
+  master_current_temp: "{{ state_attr(master_thermostat, 'current_temperature') }}"
+  reference_current_temp: "{{ state_attr(reference_heater, 'current_temperature') }}"
+
+condition:
+  - alias: Ensure all required temperature attributes are valid numbers
+    condition: template
+    value_template: >-
+      {{ master_target_temp is number
+         and master_current_temp is number
+         and reference_current_temp is number }}
+
+action:
+  - variables:
+      actual_diff: "{{ (master_target_temp | float) - (master_current_temp | float) }}"
+      boosted_diff: "{{ (actual_diff * (boost_multiplier | float)) | round(0) }}"
+      unclamped_target: "{{ (reference_current_temp | float) + (boosted_diff | float) }}"
+  - repeat:
+      for_each: "{{ target_heaters }}"
+      sequence:
+        - variables:
+            heater_entity: "{{ repeat.item }}"
+            min_temp: "{{ state_attr(heater_entity, 'min_temp') | float(5) }}"
+            max_temp: "{{ state_attr(heater_entity, 'max_temp') | float(35) }}"
+            clamped_target: >-
+              {{ ([min_temp, [unclamped_target | float, max_temp] | min] | max) | round(0) }}
+            current_setpoint: "{{ state_attr(heater_entity, 'temperature') }}"
+        - alias: Only update heater if target setpoint actually changed
+          if:
+            - condition: template
+              value_template: >-
+                {{ current_setpoint is not number
+                   or ((clamped_target | float) - (current_setpoint | float)) | abs >= 0.5 }}
+          then:
+            - action: climate.set_temperature
+              target:
+                entity_id: "{{ heater_entity }}"
+              data:
+                temperature: "{{ clamped_target }}"
