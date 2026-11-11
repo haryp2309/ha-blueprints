@@ -18,8 +18,7 @@ Automatically notifies selected mobile app devices (Android, iOS, macOS) when ne
   - **Update**: Installs the update directly from the notification (with optional automatic backup if supported by the entity).
   - **Skip**: Skips the latest version.
   - **Release Notes**: Opens the changelog/release URL when provided by the update entity.
-- **Live Status & Auto-Clear**: Updates the notification to `Updating...` while installation is in progress, and automatically clears the notification from all devices once installed or skipped (including stale Core/OS notifications after a reboot).
-- **Optional Home Assistant Persistent Notification**: Optionally mirrors and dismisses notifications inside Home Assistant.
+- **Persistent Phone Notification While Updating**: Turns the phone notification into a persistent, silent-updating ongoing notification (`persistent: true`, `only_alert_once: true`, with a live progress bar) while installation is in progress, and automatically clears it from all devices once installed or skipped (including stale Core/OS notifications after a reboot).
 
 ## Manual Import Instructions
 

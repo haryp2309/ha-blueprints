@@ -3,7 +3,8 @@ blueprint:
   description: >-
     Automatically notify selected mobile app devices when new updates are
     available for monitored update entities, with actionable buttons to install,
-    skip, or view release notes.
+    skip, or view release notes, and a persistent ongoing notification on the
+    phone while an update is installing.
   domain: automation
   homeassistant:
     min_version: "2024.6.0"
@@ -53,13 +54,6 @@ blueprint:
       default: true
       selector:
         boolean:
-    send_to_ha:
-      name: Send to Home Assistant
-      description: >-
-        Also create and dismiss a persistent notification in Home Assistant.
-      default: false
-      selector:
-        boolean:
 
 mode: parallel
 max: 100
@@ -80,6 +74,18 @@ trigger:
     attribute: in_progress
     from: false
     to: true
+  - id: progress
+    platform: state
+    entity_id: !input update_entities
+    attribute: update_percentage
+  - id: stopped_still_pending
+    platform: state
+    entity_id: !input update_entities
+    attribute: in_progress
+    from: true
+    to: false
+    for:
+      seconds: 2
   - id: done
     platform: state
     entity_id: !input update_entities
@@ -120,7 +126,6 @@ variables:
   notification_category: !input notification_category
   notification_icon: !input notification_icon
   take_backup: !input take_backup
-  send_to_ha: !input send_to_ha
   core_update_entity: >-
     {% for u in integration_entities('hassio') | select('search', '^update[.]')
        if u in update_entities and ((device_attr(u, 'identifiers') or []) | first | default([]))[1] | default('') == 'core' %}
@@ -202,14 +207,6 @@ action:
                     title: "{{ title | default('') }}"
                     message: "{{ message }}"
                     data: "{{ device_data }}"
-          - &dismiss-from-ha
-            alias: Dismiss persistent notification in HA if enabled
-            choose:
-              - conditions: "{{ send_to_ha }}"
-                sequence:
-                  - action: persistent_notification.dismiss
-                    data:
-                      notification_id: *tag-from-entity
 
       - alias: On startup, dismiss stale Core and OS update notifications if now off
         conditions:
@@ -224,7 +221,6 @@ action:
                       entity_id: "{{ core_update_entity }}"
                   - *dismiss-variables
                   - *send-to-mobile-devices
-                  - *dismiss-from-ha
           - choose:
               - alias: Dismiss OS update notification if off
                 conditions:
@@ -234,12 +230,16 @@ action:
                       entity_id: "{{ os_update_entity }}"
                   - *dismiss-variables
                   - *send-to-mobile-devices
-                  - *dismiss-from-ha
 
       - alias: New update available or newer version released while already pending
         conditions:
           - >-
-            {{ trigger.id == 'new' or (
+            {{ trigger.id == 'new'
+               or (
+                 trigger.id == 'stopped_still_pending'
+                 and is_state(trigger.entity_id, 'on')
+               )
+               or (
                  trigger.id == 'new_version'
                  and trigger.from_state is not none
                  and trigger.to_state is not none
@@ -281,18 +281,6 @@ action:
                      + ([update_action] if supports_install else [])
                      + ([] if is_supervisor else [skip_action]) }}
           - *send-to-mobile-devices
-          - &send-to-ha
-            alias: Send persistent notification to HA if enabled
-            choose:
-              - conditions: "{{ send_to_ha }}"
-                sequence:
-                  - action: persistent_notification.create
-                    data:
-                      notification_id: *tag-from-entity
-                      title: "{{ title }}"
-                      message: >-
-                        {{ message ~ '\n\n- [Open Updates](' ~ url ~ ')'
-                           ~ ('\n- [Release Notes](' ~ release_url ~ ')' if release_url is string else '') }}
 
       - alias: Emulate sticky notification on iOS after tapping Release Notes URI
         conditions:
@@ -305,18 +293,30 @@ action:
               entity_id: *tag-to-entity
           - *update-variables
           - *send-to-mobile-devices
-          - *send-to-ha
 
-      - alias: Update installation started
+      - alias: Update installation in progress (persistent notification on phone)
         conditions:
-          - "{{ trigger.id == 'started' }}"
+          - >-
+            {{ trigger.id == 'started' or (
+                 trigger.id == 'progress'
+                 and trigger.to_state is not none
+                 and trigger.to_state.attributes.in_progress == true
+                 and trigger.to_state.attributes.update_percentage is number
+               ) }}
         sequence:
           - *id-from-state-trigger
           - *update-variables
           - variables:
+              pct: "{{ state_attr(entity_id, 'update_percentage') }}"
               message: >-
-                Updating... ({{ state_attr(entity_id, 'installed_version') }} → {{ state_attr(entity_id, 'latest_version') }})
+                Updating{{ ' (' ~ pct ~ '%)' if pct is number else '...' }} ({{ state_attr(entity_id, 'installed_version') }} → {{ state_attr(entity_id, 'latest_version') }})
               data: >-
-                {{ dict(data, actions=([changelog_action] if release_url is string else [])) }}
+                {{ dict(
+                     data,
+                     persistent=true,
+                     only_alert_once=true,
+                     max_progress=100,
+                     progress=(pct | int if pct is number else -1),
+                     actions=([changelog_action] if release_url is string else [])
+                   ) }}
           - *send-to-mobile-devices
-          - *send-to-ha
