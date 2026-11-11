@@ -65,6 +65,20 @@ blueprint:
           step: 10
           unit_of_measurement: s
           mode: slider
+    change_threshold:
+      name: Minimum temperature change threshold
+      description: >-
+        Minimum difference (in °C) required between the newly calculated target
+        temperature and the heater's current setpoint before sending a
+        climate.set_temperature command.
+      default: 0.1
+      selector:
+        number:
+          min: 0
+          max: 5
+          step: 0.1
+          unit_of_measurement: "°C"
+          mode: slider
 
 mode: single
 max_exceeded: silent
@@ -89,6 +103,7 @@ variables:
   master_thermostat: !input master_thermostat
   target_heaters: !input target_heaters
   default_boost_multiplier: !input default_boost_multiplier
+  change_threshold: !input change_threshold
   _heater_boost_overrides: !input heater_boost_overrides
   heater_boost_overrides: >-
     {{ _heater_boost_overrides if _heater_boost_overrides is mapping else {} }}
@@ -120,7 +135,7 @@ action:
             clamped_target: >-
               {% if heater_current_temp is number %}
                 {% set unclamped = (heater_current_temp | float) + (boosted_diff | float) %}
-                {{ ([min_temp, [unclamped, max_temp] | min] | max) | round(0) }}
+                {{ ([min_temp, [unclamped, max_temp] | min] | max) | round(1) }}
               {% else %}
                 {{ none }}
               {% endif %}
@@ -132,7 +147,7 @@ action:
                 {{ clamped_target is number
                    and (
                      current_setpoint is not number
-                     or ((clamped_target | float) - (current_setpoint | float)) | abs >= 0.5
+                     or ((clamped_target | float) - (current_setpoint | float)) | abs >= (change_threshold | float)
                    ) }}
           then:
             - action: climate.set_temperature
