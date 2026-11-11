@@ -72,8 +72,6 @@ trigger:
     platform: state
     entity_id: !input update_entities
     attribute: in_progress
-    from: false
-    to: true
   - id: progress
     platform: state
     entity_id: !input update_entities
@@ -297,9 +295,17 @@ action:
       - alias: Update installation in progress (persistent notification on phone)
         conditions:
           - >-
-            {{ trigger.id == 'started' or (
-                 trigger.id == 'progress'
+            {{ (
+                 trigger.id == 'started'
+                 and trigger.from_state is not none
                  and trigger.to_state is not none
+                 and trigger.to_state.attributes.in_progress != false
+                 and trigger.to_state.attributes.in_progress is not none
+               ) or (
+                 trigger.id == 'progress'
+                 and trigger.from_state is not none
+                 and trigger.to_state is not none
+                 and trigger.from_state.attributes.in_progress == true
                  and trigger.to_state.attributes.in_progress == true
                  and trigger.to_state.attributes.update_percentage is number
                ) }}
@@ -307,16 +313,21 @@ action:
           - *id-from-state-trigger
           - *update-variables
           - variables:
-              pct: "{{ state_attr(entity_id, 'update_percentage') }}"
+              raw_pct: "{{ state_attr(entity_id, 'update_percentage') }}"
+              in_prog: "{{ state_attr(entity_id, 'in_progress') }}"
+              pct: >-
+                {{ raw_pct if raw_pct is number and raw_pct is not boolean
+                   else (in_prog if in_prog is number and in_prog is not boolean else none) }}
               message: >-
-                Updating{{ ' (' ~ pct ~ '%)' if pct is number else '...' }} ({{ state_attr(entity_id, 'installed_version') }} → {{ state_attr(entity_id, 'latest_version') }})
+                Updating{{ ' (' ~ (pct | int) ~ '%)' if pct is number else '...' }} ({{ state_attr(entity_id, 'installed_version') }} → {{ state_attr(entity_id, 'latest_version') }})
               data: >-
                 {{ dict(
                      data,
                      persistent=true,
                      only_alert_once=true,
-                     max_progress=100,
-                     progress=(pct | int if pct is number else -1),
+                     progress_max=100,
+                     progress=(pct | int if pct is number else 0),
+                     progress_indeterminate=(pct is not number),
                      actions=([changelog_action] if release_url is string else [])
                    ) }}
           - *send-to-mobile-devices
