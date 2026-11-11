@@ -33,6 +33,7 @@ $$\text{Target}_i = \text{clamp}\!\left(\text{Heater}_{i,\text{current}} + \text
 **Features:**
 - **Per-Heater Baseline & Boost**: Each target heater uses its own `current_temperature` and either the default boost multiplier (default `4`) or a custom per-heater multiplier configured in `heater_boost_overrides`.
 - **Unlimited Target Heaters**: Select any number of `climate` entities via the entity picker.
+- **Master Off Sync**: Automatically turns off all target heaters (`hvac_mode: off`) when the master thermostat is set to `off`, and turns them back to `heat` when the master thermostat resumes heating.
 - **Min/Max Temperature Clamping**: Clamps calculated setpoints to each heater's `min_temp` and `max_temp` attributes so `climate.set_temperature` calls never fail out of bounds.
 - **Loop & Traffic Protection**: Debounces changes to each heater's `current_temperature` and only sends `climate.set_temperature` when a heater's target temperature actually changes.
 

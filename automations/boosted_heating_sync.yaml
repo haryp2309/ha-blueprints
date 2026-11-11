@@ -84,6 +84,9 @@ mode: single
 max_exceeded: silent
 
 trigger:
+  - id: master_state
+    platform: state
+    entity_id: !input master_thermostat
   - id: master_current
     platform: state
     entity_id: !input master_thermostat
@@ -110,48 +113,86 @@ variables:
   master_target_temp: "{{ state_attr(master_thermostat, 'temperature') }}"
   master_current_temp: "{{ state_attr(master_thermostat, 'current_temperature') }}"
 
-condition:
-  - alias: Ensure master thermostat temperature attributes are valid numbers
-    condition: template
-    value_template: >-
-      {{ master_target_temp is number and master_current_temp is number }}
-
 action:
-  - variables:
-      actual_diff: "{{ (master_target_temp | float) - (master_current_temp | float) }}"
-  - repeat:
-      for_each: "{{ target_heaters }}"
-      sequence:
-        - variables:
-            heater_entity: "{{ repeat.item }}"
-            heater_current_temp: "{{ state_attr(heater_entity, 'current_temperature') }}"
-            heater_boost: >-
-              {{ heater_boost_overrides.get(heater_entity, default_boost_multiplier)
-                 | float(default_boost_multiplier | float) }}
-            boosted_diff: >-
-              {{ ((actual_diff | float) * (heater_boost | float)) | round(0) }}
-            min_temp: "{{ state_attr(heater_entity, 'min_temp') | float(5) }}"
-            max_temp: "{{ state_attr(heater_entity, 'max_temp') | float(35) }}"
-            clamped_target: >-
-              {% if heater_current_temp is number %}
-                {% set unclamped = (heater_current_temp | float) + (boosted_diff | float) %}
-                {{ ([min_temp, [unclamped, max_temp] | min] | max) | round(1) }}
-              {% else %}
-                {{ none }}
-              {% endif %}
-            current_setpoint: "{{ state_attr(heater_entity, 'temperature') }}"
-        - alias: Only update heater if its current_temperature is valid and target setpoint changed
-          if:
-            - condition: template
-              value_template: >-
-                {{ clamped_target is number
-                   and (
-                     current_setpoint is not number
-                     or ((clamped_target | float) - (current_setpoint | float)) | abs >= (change_threshold | float)
-                   ) }}
-          then:
-            - action: climate.set_temperature
-              target:
-                entity_id: "{{ heater_entity }}"
-              data:
-                temperature: "{{ clamped_target }}"
+  - choose:
+      - alias: Turn off target heaters when master thermostat is off
+        conditions:
+          - condition: state
+            entity_id: !input master_thermostat
+            state: "off"
+        sequence:
+          - repeat:
+              for_each: "{{ target_heaters }}"
+              sequence:
+                - variables:
+                    heater_entity: "{{ repeat.item }}"
+                - alias: Only turn off heater if it is not already off
+                  if:
+                    - condition: template
+                      value_template: >-
+                        {{ states(heater_entity) not in ['off', 'unavailable', 'unknown'] }}
+                  then:
+                    - action: climate.set_hvac_mode
+                      target:
+                        entity_id: "{{ heater_entity }}"
+                      data:
+                        hvac_mode: "off"
+
+      - alias: Sync boosted temperature when master thermostat is active
+        conditions:
+          - condition: template
+            value_template: >-
+              {{ states(master_thermostat) not in ['off', 'unavailable', 'unknown']
+                 and master_target_temp is number
+                 and master_current_temp is number }}
+        sequence:
+          - variables:
+              actual_diff: "{{ (master_target_temp | float) - (master_current_temp | float) }}"
+          - repeat:
+              for_each: "{{ target_heaters }}"
+              sequence:
+                - variables:
+                    heater_entity: "{{ repeat.item }}"
+                    heater_was_off: "{{ is_state(heater_entity, 'off') }}"
+                    heater_current_temp: "{{ state_attr(heater_entity, 'current_temperature') }}"
+                    heater_boost: >-
+                      {{ heater_boost_overrides.get(heater_entity, default_boost_multiplier)
+                         | float(default_boost_multiplier | float) }}
+                    boosted_diff: >-
+                      {{ ((actual_diff | float) * (heater_boost | float)) | round(0) }}
+                    min_temp: "{{ state_attr(heater_entity, 'min_temp') | float(5) }}"
+                    max_temp: "{{ state_attr(heater_entity, 'max_temp') | float(35) }}"
+                    clamped_target: >-
+                      {% if heater_current_temp is number %}
+                        {% set unclamped = (heater_current_temp | float) + (boosted_diff | float) %}
+                        {{ ([min_temp, [unclamped, max_temp] | min] | max) | round(1) }}
+                      {% else %}
+                        {{ none }}
+                      {% endif %}
+                    current_setpoint: "{{ state_attr(heater_entity, 'temperature') }}"
+                - alias: Turn heater back to heat mode if it was off
+                  if:
+                    - condition: template
+                      value_template: "{{ heater_was_off }}"
+                  then:
+                    - action: climate.set_hvac_mode
+                      target:
+                        entity_id: "{{ heater_entity }}"
+                      data:
+                        hvac_mode: heat
+                - alias: Only update heater if its current_temperature is valid and target setpoint changed
+                  if:
+                    - condition: template
+                      value_template: >-
+                        {{ clamped_target is number
+                           and (
+                             heater_was_off
+                             or current_setpoint is not number
+                             or ((clamped_target | float) - (current_setpoint | float)) | abs >= (change_threshold | float)
+                           ) }}
+                  then:
+                    - action: climate.set_temperature
+                      target:
+                        entity_id: "{{ heater_entity }}"
+                      data:
+                        temperature: "{{ clamped_target }}"
