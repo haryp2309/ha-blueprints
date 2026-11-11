@@ -296,19 +296,19 @@ action:
       - alias: Update installation in progress (persistent notification on phone)
         conditions:
           - >-
-            {{ (
+            {% set in_prog = state_attr(trigger.entity_id, 'in_progress') %}
+            {% set is_updating = (in_prog == true) or (in_prog is number and in_prog is not boolean and in_prog >= 0) %}
+            {{ trigger.from_state is not none
+               and trigger.to_state is not none
+               and trigger.from_state.state == 'on'
+               and trigger.to_state.state == 'on'
+               and is_updating
+               and (
                  trigger.id == 'started'
-                 and trigger.from_state is not none
-                 and trigger.to_state is not none
-                 and trigger.to_state.attributes.in_progress != false
-                 and trigger.to_state.attributes.in_progress is not none
-               ) or (
-                 trigger.id == 'progress'
-                 and trigger.from_state is not none
-                 and trigger.to_state is not none
-                 and trigger.from_state.attributes.in_progress == true
-                 and trigger.to_state.attributes.in_progress == true
-                 and trigger.to_state.attributes.update_percentage is number
+                 or (
+                   trigger.id == 'progress'
+                   and state_attr(trigger.entity_id, 'update_percentage') is number
+                 )
                ) }}
         sequence:
           - *id-from-state-trigger
