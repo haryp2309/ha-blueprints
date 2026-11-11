@@ -1,0 +1,322 @@
+blueprint:
+  name: Update Notifications
+  description: >-
+    Automatically notify selected mobile app devices when new updates are
+    available for monitored update entities, with actionable buttons to install,
+    skip, or view release notes.
+  domain: automation
+  homeassistant:
+    min_version: "2024.6.0"
+  input:
+    update_entities:
+      name: Update entities
+      description: >-
+        List of update entities to watch for updates and notify as soon as a
+        new version is available.
+      selector:
+        entity:
+          domain: update
+          multiple: true
+    alert_devices:
+      name: Alert devices
+      description: >-
+        Devices running the Home Assistant Companion App (Android, iOS, macOS)
+        that should receive update notifications.
+      selector:
+        device:
+          integration: mobile_app
+          multiple: true
+    notification_category:
+      name: Notification category
+      description: >-
+        Sets the notification [channel](https://companion.home-assistant.io/docs/notifications/notifications-basic#notification-channels)
+        (Android) and [group / thread-id](https://companion.home-assistant.io/docs/notifications/notifications-basic#grouping)
+        (iOS) for update notifications.
+      default: Updates
+      selector:
+        text:
+    notification_icon:
+      name: Notification icon
+      description: >-
+        (Android only) Sets the [status bar icon](https://companion.home-assistant.io/docs/notifications/notifications-basic/#notification-icon).
+        Note: The icon inside the notification body uses the entity picture of
+        the update entity if available.
+      default: mdi:package-up
+      selector:
+        icon:
+          placeholder: mdi:package-up
+    take_backup:
+      name: Take backup before installing
+      description: >-
+        Automatically take a backup before installing an update from the
+        notification action (if supported by the update entity).
+      default: true
+      selector:
+        boolean:
+    send_to_ha:
+      name: Send to Home Assistant
+      description: >-
+        Also create and dismiss a persistent notification in Home Assistant.
+      default: false
+      selector:
+        boolean:
+
+mode: parallel
+max: 100
+
+trigger:
+  - id: new
+    platform: state
+    entity_id: !input update_entities
+    from: "off"
+    to: "on"
+  - id: new_version
+    platform: state
+    entity_id: !input update_entities
+    attribute: latest_version
+  - id: started
+    platform: state
+    entity_id: !input update_entities
+    attribute: in_progress
+    from: false
+    to: true
+  - id: done
+    platform: state
+    entity_id: !input update_entities
+    from: "on"
+    to: "off"
+  - id: install
+    platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: install-update
+  - id: install_ios
+    platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      actionName: install-update
+  - id: skip
+    platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: skip-update
+  - id: skip_ios
+    platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      actionName: skip-update
+  - id: sticky_ios
+    platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: URI
+  - id: ha_start
+    platform: homeassistant
+    event: start
+
+variables:
+  update_entities: !input update_entities
+  alert_devices: !input alert_devices
+  notification_category: !input notification_category
+  notification_icon: !input notification_icon
+  take_backup: !input take_backup
+  send_to_ha: !input send_to_ha
+  core_update_entity: >-
+    {% for u in integration_entities('hassio') | select('search', '^update[.]')
+       if u in update_entities and ((device_attr(u, 'identifiers') or []) | first | default([]))[1] | default('') == 'core' %}
+      {{ u }}
+    {% endfor %}
+  os_update_entity: >-
+    {% for u in integration_entities('hassio') | select('search', '^update[.]')
+       if u in update_entities and ((device_attr(u, 'identifiers') or []) | first | default([]))[1] | default('') == 'OS' %}
+      {{ u }}
+    {% endfor %}
+  update_action:
+    action: install-update
+    title: Update
+    destructive: true
+    authenticationRequired: true
+  skip_action:
+    action: skip-update
+    title: Skip
+    destructive: true
+    authenticationRequired: true
+
+action:
+  - choose:
+      - alias: Install update from notification action
+        conditions:
+          - "{{ trigger.id in ['install', 'install_ios'] }}"
+        sequence:
+          - variables:
+              entity_id: &tag-to-entity >-
+                update.{{ trigger.event.data.tag
+                  if trigger.event.data.tag is defined and trigger.event.data.tag is string and trigger.event.data.tag != ''
+                  else trigger.event.data.action_data.tag }}
+              supports_backup: >-
+                {{ (state_attr(entity_id, 'supported_features') | int(0)) | bitwise_and(8) > 0 }}
+          - condition: "{{ entity_id in update_entities }}"
+          - action: update.install
+            target:
+              entity_id: "{{ entity_id }}"
+            data:
+              backup: "{{ take_backup and supports_backup }}"
+
+      - alias: Skip update from notification action
+        conditions:
+          - "{{ trigger.id in ['skip', 'skip_ios'] }}"
+        sequence:
+          - variables:
+              entity_id: *tag-to-entity
+          - condition: "{{ entity_id in update_entities }}"
+          - action: update.skip
+            target:
+              entity_id: "{{ entity_id }}"
+
+      - alias: Update completed or skipped
+        conditions:
+          - "{{ trigger.id == 'done' }}"
+        sequence:
+          - &id-from-state-trigger
+            variables:
+              entity_id: "{{ trigger.entity_id }}"
+          - &dismiss-variables
+            variables:
+              title: ""
+              message: clear_notification
+              data:
+                tag: &tag-from-entity "{{ entity_id[7:] }}"
+          - &send-to-mobile-devices
+            repeat:
+              for_each: "{{ alert_devices }}"
+              sequence:
+                - variables:
+                    is_apple: "{{ device_attr(repeat.item, 'manufacturer') == 'Apple' }}"
+                    device_payload_base: "{{ dict(data, action_data={'tag': data.tag}) }}"
+                    device_data: >-
+                      {{ dict(device_payload_base, image=data.icon_url)
+                         if is_apple and data.icon_url is defined and data.icon_url is string and data.icon_url != ''
+                         else device_payload_base }}
+                - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+                  data:
+                    title: "{{ title | default('') }}"
+                    message: "{{ message }}"
+                    data: "{{ device_data }}"
+          - &dismiss-from-ha
+            alias: Dismiss persistent notification in HA if enabled
+            choose:
+              - conditions: "{{ send_to_ha }}"
+                sequence:
+                  - action: persistent_notification.dismiss
+                    data:
+                      notification_id: *tag-from-entity
+
+      - alias: On startup, dismiss stale Core and OS update notifications if now off
+        conditions:
+          - "{{ trigger.id == 'ha_start' }}"
+        sequence:
+          - choose:
+              - alias: Dismiss Core update notification if off
+                conditions:
+                  - "{{ core_update_entity != '' and is_state(core_update_entity, 'off') }}"
+                sequence:
+                  - variables:
+                      entity_id: "{{ core_update_entity }}"
+                  - *dismiss-variables
+                  - *send-to-mobile-devices
+                  - *dismiss-from-ha
+          - choose:
+              - alias: Dismiss OS update notification if off
+                conditions:
+                  - "{{ os_update_entity != '' and is_state(os_update_entity, 'off') }}"
+                sequence:
+                  - variables:
+                      entity_id: "{{ os_update_entity }}"
+                  - *dismiss-variables
+                  - *send-to-mobile-devices
+                  - *dismiss-from-ha
+
+      - alias: New update available or newer version released while already pending
+        conditions:
+          - >-
+            {{ trigger.id == 'new' or (
+                 trigger.id == 'new_version'
+                 and trigger.from_state is not none
+                 and trigger.to_state is not none
+                 and trigger.from_state.state == 'on'
+                 and trigger.to_state.state == 'on'
+                 and trigger.from_state.attributes.latest_version != trigger.to_state.attributes.latest_version
+               ) }}
+        sequence:
+          - *id-from-state-trigger
+          - &update-variables
+            variables:
+              ids: "{{ (device_attr(entity_id, 'identifiers') or []) | first | default([]) }}"
+              supports_install: >-
+                {{ (state_attr(entity_id, 'supported_features') | int(0)) | bitwise_and(1) > 0 }}
+              is_supervisor: >-
+                {{ ids | count > 1 and ids[0] == 'hassio' and ids[1] == 'supervisor' }}
+              release_url: "{{ state_attr(entity_id, 'release_url') | default(none, true) }}"
+              changelog_action:
+                action: URI
+                title: Release Notes
+                uri: "{{ release_url }}"
+              title: "{{ state_attr(entity_id, 'friendly_name') or entity_id }}"
+              message: >-
+                {{ state_attr(entity_id, 'installed_version') }} → {{ state_attr(entity_id, 'latest_version') }}
+              url: /config/updates
+              data:
+                tag: *tag-from-entity
+                channel: "{{ notification_category }}"
+                group: "{{ notification_category }}"
+                push:
+                  thread-id: "{{ notification_category }}"
+                notification_icon: "{{ notification_icon }}"
+                icon_url: "{{ state_attr(entity_id, 'entity_picture') | default('', true) }}"
+                url: "{{ url }}"
+                clickAction: "{{ url }}"
+                sticky: "true"
+                actions: >-
+                  {{ ([changelog_action] if release_url is string else [])
+                     + ([update_action] if supports_install else [])
+                     + ([] if is_supervisor else [skip_action]) }}
+          - *send-to-mobile-devices
+          - &send-to-ha
+            alias: Send persistent notification to HA if enabled
+            choose:
+              - conditions: "{{ send_to_ha }}"
+                sequence:
+                  - action: persistent_notification.create
+                    data:
+                      notification_id: *tag-from-entity
+                      title: "{{ title }}"
+                      message: >-
+                        {{ message ~ '\n\n- [Open Updates](' ~ url ~ ')'
+                           ~ ('\n- [Release Notes](' ~ release_url ~ ')' if release_url is string else '') }}
+
+      - alias: Emulate sticky notification on iOS after tapping Release Notes URI
+        conditions:
+          - "{{ trigger.id == 'sticky_ios' }}"
+          - "{{ trigger.event.data.action_data is defined and trigger.event.data.action_data is mapping and trigger.event.data.action_data.tag is string }}"
+          - "{{ ('update.' ~ trigger.event.data.action_data.tag) in update_entities }}"
+          - "{{ is_state('update.' ~ trigger.event.data.action_data.tag, 'on') }}"
+        sequence:
+          - variables:
+              entity_id: *tag-to-entity
+          - *update-variables
+          - *send-to-mobile-devices
+          - *send-to-ha
+
+      - alias: Update installation started
+        conditions:
+          - "{{ trigger.id == 'started' }}"
+        sequence:
+          - *id-from-state-trigger
+          - *update-variables
+          - variables:
+              message: >-
+                Updating... ({{ state_attr(entity_id, 'installed_version') }} → {{ state_attr(entity_id, 'latest_version') }})
+              data: >-
+                {{ dict(data, actions=([changelog_action] if release_url is string else [])) }}
+          - *send-to-mobile-devices
+          - *send-to-ha
