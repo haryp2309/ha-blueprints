@@ -274,6 +274,7 @@ action:
                 url: "{{ url }}"
                 clickAction: "{{ url }}"
                 sticky: "true"
+                alert_once: true
                 actions: >-
                   {{ ([changelog_action] if release_url is string else [])
                      + ([update_action] if supports_install else [])
@@ -323,8 +324,10 @@ action:
               data: >-
                 {{ dict(
                      data,
+                     live_update=true,
+                     critical_text=((pct | int) ~ '%' if pct is number else 'Updating'),
                      persistent=true,
-                     only_alert_once=true,
+                     alert_once=true,
                      progress_max=100,
                      progress=(pct | int if pct is number else 0),
                      progress_indeterminate=(pct is not number),
