@@ -326,6 +326,7 @@ action:
                       data: >-
                         {{ dict(
                              data,
+                             icon_url='',
                              live_update=true,
                              critical_text='Restart',
                              persistent=true,
@@ -347,6 +348,7 @@ action:
                       data: >-
                         {{ dict(
                              data,
+                             icon_url='',
                              live_update=true,
                              critical_text='100%',
                              persistent=true,
@@ -440,6 +442,7 @@ action:
               data: >-
                 {{ dict(
                      data,
+                     icon_url='',
                      live_update=true,
                      critical_text=((pct | int) ~ '%' if pct is number else 'Updating'),
                      persistent=true,
