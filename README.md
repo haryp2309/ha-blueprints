@@ -18,7 +18,8 @@ Automatically notifies selected mobile app devices (Android, iOS, macOS) when ne
   - **Update**: Installs the update directly from the notification (with optional automatic backup if supported by the entity).
   - **Skip**: Skips the latest version.
   - **Release Notes**: Opens the changelog/release URL when provided by the update entity.
-- **Live Activity / Live Update While Updating**: Uses `live_update: true`, `critical_text` (status bar chip / Dynamic Island), `persistent: true`, `alert_once: true` (silent in-place updates), and a live progress bar while installation is in progress, and automatically clears it from all devices once installed or skipped (including stale Core/OS notifications after a reboot).
+  - **Restart**: Appears when an update requires a Home Assistant restart to take effect, allowing you to restart Home Assistant directly from the notification.
+- **Live Activity / Live Update While Updating**: Uses `live_update: true`, `critical_text` (status bar chip / Dynamic Island), `persistent: true`, `alert_once: true` (silent in-place updates), and a live progress bar while installation is in progress. When finished, it advances the bar to **100%** and either transitions to a **"Restart required"** prompt (if a Home Assistant restart is needed) or automatically clears the notification from all devices (including stale Core/OS/HACS notifications after a reboot).
 
 ---
 

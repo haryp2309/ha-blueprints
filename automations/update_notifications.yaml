@@ -3,8 +3,8 @@ blueprint:
   description: >-
     Automatically notify selected mobile app devices when new updates are
     available for monitored update entities, with actionable buttons to install,
-    skip, or view release notes, and a persistent ongoing notification on the
-    phone while an update is installing.
+    skip, or view release notes, and a persistent ongoing live notification on
+    the phone while an update is installing or awaiting a Home Assistant restart.
   domain: automation
   homeassistant:
     min_version: "2024.6.0"
@@ -87,7 +87,9 @@ trigger:
   - id: done
     platform: state
     entity_id: !input update_entities
-    from: "on"
+    from:
+      - "on"
+      - "unavailable"
     to: "off"
   - id: install
     platform: event
@@ -109,6 +111,16 @@ trigger:
     event_type: mobile_app_notification_action
     event_data:
       actionName: skip-update
+  - id: restart_ha
+    platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      action: restart-ha
+  - id: restart_ha_ios
+    platform: event
+    event_type: mobile_app_notification_action
+    event_data:
+      actionName: restart-ha
   - id: sticky_ios
     platform: event
     event_type: mobile_app_notification_action
@@ -125,15 +137,19 @@ variables:
   notification_icon: !input notification_icon
   take_backup: !input take_backup
   core_update_entity: >-
+    {% set ns = namespace(entity='') %}
     {% for u in integration_entities('hassio') | select('search', '^update[.]')
-       if u in update_entities and ((device_attr(u, 'identifiers') or []) | first | default([]))[1] | default('') == 'core' %}
-      {{ u }}
+       if u in update_entities and ((device_attr(u, 'identifiers') or [[]]) | list | first)[1] | default('') == 'core' %}
+      {% set ns.entity = u %}
     {% endfor %}
+    {{ ns.entity | trim }}
   os_update_entity: >-
+    {% set ns = namespace(entity='') %}
     {% for u in integration_entities('hassio') | select('search', '^update[.]')
-       if u in update_entities and ((device_attr(u, 'identifiers') or []) | first | default([]))[1] | default('') == 'OS' %}
-      {{ u }}
+       if u in update_entities and ((device_attr(u, 'identifiers') or [[]]) | list | first)[1] | default('') == 'OS' %}
+      {% set ns.entity = u %}
     {% endfor %}
+    {{ ns.entity | trim }}
   update_action:
     action: install-update
     title: Update
@@ -142,6 +158,11 @@ variables:
   skip_action:
     action: skip-update
     title: Skip
+    destructive: true
+    authenticationRequired: true
+  restart_action:
+    action: restart-ha
+    title: Restart
     destructive: true
     authenticationRequired: true
 
@@ -176,59 +197,6 @@ action:
             target:
               entity_id: "{{ entity_id }}"
 
-      - alias: Update completed or skipped
-        conditions:
-          - "{{ trigger.id == 'done' }}"
-        sequence:
-          - &id-from-state-trigger
-            variables:
-              entity_id: "{{ trigger.entity_id }}"
-          - &dismiss-variables
-            variables:
-              title: ""
-              message: clear_notification
-              data:
-                tag: &tag-from-entity "{{ entity_id[7:] }}"
-          - &send-to-mobile-devices
-            repeat:
-              for_each: "{{ alert_devices }}"
-              sequence:
-                - variables:
-                    is_apple: "{{ device_attr(repeat.item, 'manufacturer') == 'Apple' }}"
-                    device_payload_base: "{{ dict(data, action_data={'tag': data.tag}) }}"
-                    device_data: >-
-                      {{ dict(device_payload_base, image=data.icon_url)
-                         if is_apple and data.icon_url is defined and data.icon_url is string and data.icon_url != ''
-                         else device_payload_base }}
-                - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
-                  data:
-                    title: "{{ title | default('') }}"
-                    message: "{{ message }}"
-                    data: "{{ device_data }}"
-
-      - alias: On startup, dismiss stale Core and OS update notifications if now off
-        conditions:
-          - "{{ trigger.id == 'ha_start' }}"
-        sequence:
-          - choose:
-              - alias: Dismiss Core update notification if off
-                conditions:
-                  - "{{ core_update_entity != '' and is_state(core_update_entity, 'off') }}"
-                sequence:
-                  - variables:
-                      entity_id: "{{ core_update_entity }}"
-                  - *dismiss-variables
-                  - *send-to-mobile-devices
-          - choose:
-              - alias: Dismiss OS update notification if off
-                conditions:
-                  - "{{ os_update_entity != '' and is_state(os_update_entity, 'off') }}"
-                sequence:
-                  - variables:
-                      entity_id: "{{ os_update_entity }}"
-                  - *dismiss-variables
-                  - *send-to-mobile-devices
-
       - alias: New update available or newer version released while already pending
         conditions:
           - >-
@@ -246,10 +214,12 @@ action:
                  and trigger.from_state.attributes.latest_version != trigger.to_state.attributes.latest_version
                ) }}
         sequence:
-          - *id-from-state-trigger
+          - &id-from-state-trigger
+            variables:
+              entity_id: "{{ trigger.entity_id }}"
           - &update-variables
             variables:
-              ids: "{{ (device_attr(entity_id, 'identifiers') or []) | first | default([]) }}"
+              ids: "{{ (device_attr(entity_id, 'identifiers') or [[]]) | list | first }}"
               supports_install: >-
                 {{ (state_attr(entity_id, 'supported_features') | int(0)) | bitwise_and(1) > 0 }}
               is_supervisor: >-
@@ -264,7 +234,7 @@ action:
                 {{ state_attr(entity_id, 'installed_version') }} → {{ state_attr(entity_id, 'latest_version') }}
               url: /config/updates
               data:
-                tag: *tag-from-entity
+                tag: &tag-from-entity "{{ entity_id[7:] }}"
                 channel: "{{ notification_category }}"
                 group: "{{ notification_category }}"
                 push:
@@ -279,7 +249,153 @@ action:
                   {{ ([changelog_action] if release_url is string else [])
                      + ([update_action] if supports_install else [])
                      + ([] if is_supervisor else [skip_action]) }}
+          - variables:
+              data: >-
+                {{ dict(data, live_update=false, persistent=false, progress=-1)
+                   if trigger.id == 'stopped_still_pending'
+                   else data }}
+          - &send-to-mobile-devices
+            repeat:
+              for_each: "{{ alert_devices }}"
+              sequence:
+                - choose:
+                    - conditions: "{{ message == 'clear_notification' }}"
+                      sequence:
+                        - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+                          data:
+                            message: clear_notification
+                            data:
+                              tag: "{{ data.tag }}"
+                  default:
+                    - variables:
+                        is_apple: "{{ device_attr(repeat.item, 'manufacturer') == 'Apple' }}"
+                        device_payload_base: "{{ dict(data, action_data={'tag': data.tag}) }}"
+                        device_data: >-
+                          {{ dict(device_payload_base, image=data.icon_url)
+                             if is_apple and data.icon_url is defined and data.icon_url is string and data.icon_url != ''
+                             else device_payload_base }}
+                    - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+                      data:
+                        title: "{{ title | default('') }}"
+                        message: "{{ message }}"
+                        data: "{{ device_data }}"
+
+      - alias: Update completed or skipped
+        conditions:
+          - "{{ trigger.id == 'done' }}"
+          - >-
+            {{ trigger.from_state is not none
+               and (
+                 trigger.from_state.state == 'on'
+                 or state_attr(trigger.entity_id, 'installed_version') == state_attr(trigger.entity_id, 'latest_version')
+               ) }}
+        sequence:
+          - *id-from-state-trigger
+          - delay:
+              seconds: 1
+          - variables:
+              was_installed: >-
+                {{ state_attr(entity_id, 'installed_version') == state_attr(entity_id, 'latest_version') }}
+              friendly_name_lower: "{{ state_attr(entity_id, 'friendly_name') | default('', true) | lower }}"
+              restart_required: >-
+                {% set ns = namespace(found=false) %}
+                {% set now_dt = now() %}
+                {% for (domain, issue_id), details in issues().items() %}
+                  {% set trans_key = details.translation_key | default('', true) | lower %}
+                  {% if 'restart' in (issue_id | lower) or 'restart' in trans_key %}
+                    {% set placeholders = details.translation_placeholders if details.translation_placeholders is defined and details.translation_placeholders is mapping else {} %}
+                    {% set issue_name = placeholders.get('name', '') | string | lower %}
+                    {% set name_match = issue_name != '' and issue_name in friendly_name_lower %}
+                    {% set created_dt = details.created | as_datetime if details.created is defined and details.created is not none else none %}
+                    {% set recent_match = created_dt is not none and (now_dt - created_dt).total_seconds() < 30 %}
+                    {% if name_match or recent_match %}
+                      {% set ns.found = true %}
+                    {% endif %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.found }}
+          - choose:
+              - alias: Restart required to finish update
+                conditions:
+                  - "{{ was_installed and restart_required }}"
+                sequence:
+                  - *update-variables
+                  - variables:
+                      message: >-
+                        Restart required to finish update ({{ state_attr(entity_id, 'installed_version') }})
+                      data: >-
+                        {{ dict(
+                             data,
+                             live_update=true,
+                             critical_text='Restart',
+                             persistent=true,
+                             alert_once=true,
+                             progress_max=100,
+                             progress=100,
+                             progress_indeterminate=false,
+                             actions=([changelog_action] if release_url is string else []) + [restart_action]
+                           ) }}
+                  - *send-to-mobile-devices
+            default:
+              - if:
+                  - "{{ was_installed and trigger.from_state.state == 'on' }}"
+                then:
+                  - *update-variables
+                  - variables:
+                      message: >-
+                        Updated to {{ state_attr(entity_id, 'installed_version') }}
+                      data: >-
+                        {{ dict(
+                             data,
+                             live_update=true,
+                             critical_text='100%',
+                             persistent=true,
+                             alert_once=true,
+                             progress_max=100,
+                             progress=100,
+                             progress_indeterminate=false,
+                             actions=[]
+                           ) }}
+                  - *send-to-mobile-devices
+                  - delay:
+                      seconds: 2
+              - &dismiss-variables
+                variables:
+                  title: ""
+                  message: clear_notification
+                  data:
+                    tag: *tag-from-entity
+              - *send-to-mobile-devices
+
+      - alias: Restart Home Assistant from notification action
+        conditions:
+          - "{{ trigger.id in ['restart_ha', 'restart_ha_ios'] }}"
+        sequence:
+          - variables:
+              entity_id: *tag-to-entity
+          - condition: "{{ entity_id in update_entities }}"
+          - *dismiss-variables
           - *send-to-mobile-devices
+          - action: homeassistant.restart
+
+      - alias: On startup, dismiss stale Core, OS, and HACS update notifications if now off
+        conditions:
+          - "{{ trigger.id == 'ha_start' }}"
+        sequence:
+          - variables:
+              startup_clear_entities: >-
+                {% set hacs_entities = integration_entities('hacs') | list %}
+                {{ update_entities
+                   | select('is_state', 'off')
+                   | select('in', hacs_entities + [core_update_entity | trim, os_update_entity | trim])
+                   | list }}
+          - repeat:
+              for_each: "{{ startup_clear_entities }}"
+              sequence:
+                - variables:
+                    entity_id: "{{ repeat.item }}"
+                - *dismiss-variables
+                - *send-to-mobile-devices
 
       - alias: Emulate sticky notification on iOS after tapping Release Notes URI
         conditions:
@@ -333,4 +449,5 @@ action:
                      progress_indeterminate=(pct is not number),
                      actions=([changelog_action] if release_url is string else [])
                    ) }}
+          - condition: "{{ is_state(entity_id, 'on') and state_attr(entity_id, 'in_progress') != false }}"
           - *send-to-mobile-devices
