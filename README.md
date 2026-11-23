@@ -38,6 +38,21 @@ $$\text{Target}_i = \text{clamp}\!\left(\text{Heater}_{i,\text{current}} + \text
 - **Min/Max Temperature Clamping**: Clamps calculated setpoints to each heater's `min_temp` and `max_temp` attributes so `climate.set_temperature` calls never fail out of bounds.
 - **Loop & Traffic Protection**: Debounces changes to each heater's `current_temperature` and only sends `climate.set_temperature` when a heater's target temperature actually changes.
 
+---
+
+### 3. Wake Up To Light (`automations/wake_up_to_light.yaml`)
+
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fharyp2309%2Fha-blueprints%2Fblob%2Fmain%2Fautomations%2Fwake_up_to_light.yaml)
+
+Gradually brightens one or more lights ahead of an alarm sensor or time helper when selected people are in the required zone.
+
+**Features:**
+- **Flexible Alarm Source**: Works with both phone timestamp sensors (e.g., Companion App next alarm) and `input_datetime` helpers.
+- **Configurable Sunrise Ramp**: Customize lead time / ramp duration (default `30 min`), step interval (default `60 s`), and starting/target brightness percentages (`1%` → `100%`).
+- **Presence & Zone Filtering**: Optionally require one or more selected `person` entities to be inside a chosen `zone` (defaults to `zone.home`).
+- **Pause & Restore Automations**: Temporarily disables selected conflicting automations (such as auto-brightness) while the sunrise ramp runs and restores only those that were originally enabled afterward.
+- **Manual Override Protection**: Optionally stops ramping any light that is manually turned off during the sunrise.
+
 ## Manual Import Instructions
 
 1. In Home Assistant, go to **Settings** -> **Automations & Scenes** -> **Blueprints**.

@@ -1,0 +1,259 @@
+blueprint:
+  name: Wake Up To Light
+  description: >-
+    Gradually brightens one or more lights ahead of an alarm sensor or time
+    helper when selected people are in the required zone, optionally pausing
+    conflicting automations (such as auto-brightness or Adaptive Lighting)
+    during the sunrise ramp and restoring them afterward.
+  domain: automation
+  homeassistant:
+    min_version: "2024.8.0"
+  input:
+    alarm_sensor:
+      name: Alarm sensor or time helper
+      description: >-
+        Timestamp sensor (e.g., phone next alarm sensor) or input_datetime
+        helper that defines when the alarm goes off.
+      selector:
+        entity:
+          filter:
+            - domain: sensor
+              device_class: timestamp
+            - domain: input_datetime
+    target_lights:
+      name: Lights to brighten
+      description: >-
+        One or more light entities to gradually brighten before the alarm.
+      selector:
+        entity:
+          domain: light
+          multiple: true
+    person_entities:
+      name: People who must be in the zone
+      description: >-
+        Only start the sunrise ramp if at least one of these people is in the
+        required zone. Leave empty to always run regardless of presence.
+      default: []
+      selector:
+        entity:
+          domain: person
+          multiple: true
+    required_zone:
+      name: Required zone
+      description: >-
+        Zone that at least one selected person must be in for the sunrise ramp
+        to start.
+      default: zone.home
+      selector:
+        entity:
+          domain: zone
+          multiple: false
+    duration_minutes:
+      name: Sunrise ramp duration
+      description: >-
+        How many minutes before the alarm to start brightening the lights
+        (and the total duration of the brightness ramp).
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 120
+          step: 1
+          unit_of_measurement: min
+          mode: slider
+    step_interval_seconds:
+      name: Step interval
+      description: >-
+        Interval (in seconds) between brightness updates and hardware transition
+        duration for each step.
+      default: 60
+      selector:
+        number:
+          min: 5
+          max: 300
+          step: 5
+          unit_of_measurement: s
+          mode: slider
+    start_brightness_pct:
+      name: Starting brightness
+      description: >-
+        Initial brightness percentage when turning on lights that are off.
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+    end_brightness_pct:
+      name: Target brightness
+      description: >-
+        Final brightness percentage to reach at the end of the sunrise ramp.
+      default: 100
+      selector:
+        number:
+          min: 1
+          max: 100
+          step: 1
+          unit_of_measurement: "%"
+          mode: slider
+    automations_to_pause:
+      name: Automations to pause
+      description: >-
+        (Optional) Automations (such as auto-brightness) that will be turned off
+        when the sunrise ramp starts (if currently on) and restored afterward.
+      default: []
+      selector:
+        entity:
+          domain: automation
+          multiple: true
+    stop_if_turned_off:
+      name: Stop ramp if light is manually turned off
+      description: >-
+        If enabled, any light manually turned off during the sunrise ramp will
+        not be turned back on by subsequent steps.
+      default: true
+      selector:
+        boolean:
+
+mode: single
+max_exceeded: silent
+
+trigger_variables:
+  alarm_sensor: !input alarm_sensor
+  duration_minutes: !input duration_minutes
+
+trigger:
+  - platform: template
+    value_template: >-
+      {% set raw = states(alarm_sensor) %}
+      {% if raw in ['unknown', 'unavailable', 'none', ''] %}
+        false
+      {% else %}
+        {% set alarm_dt = raw | as_datetime %}
+        {% if alarm_dt is not none %}
+          {% set alarm_local = alarm_dt | as_local %}
+        {% else %}
+          {% set today_dt = today_at(raw) %}
+          {% set alarm_local = today_dt + timedelta(days=1) if today_dt is not none and today_dt < now() else today_dt %}
+        {% endif %}
+        {% if alarm_local is not none %}
+          {% set start_dt = alarm_local - timedelta(minutes=(duration_minutes | int(30))) %}
+          {{ now().replace(second=0, microsecond=0) == start_dt.replace(second=0, microsecond=0) }}
+        {% else %}
+          false
+        {% endif %}
+      {% endif %}
+
+variables:
+  target_lights: !input target_lights
+  person_entities: !input person_entities
+  required_zone: !input required_zone
+  duration_minutes: !input duration_minutes
+  step_interval_seconds: !input step_interval_seconds
+  start_brightness_pct: !input start_brightness_pct
+  end_brightness_pct: !input end_brightness_pct
+  automations_to_pause: !input automations_to_pause
+  stop_if_turned_off: !input stop_if_turned_off
+
+condition:
+  - alias: Check presence in required zone if people are selected
+    condition: template
+    value_template: >-
+      {% set persons_in_zone = state_attr(required_zone, 'persons') | default([], true) %}
+      {{ person_entities | count == 0
+         or (person_entities | select('in', persons_in_zone) | list | count > 0) }}
+
+action:
+  - variables:
+      paused_automations: "{{ automations_to_pause | select('is_state', 'on') | list }}"
+      start_pct: "{{ start_brightness_pct | float(1) }}"
+      end_pct: "{{ [start_pct | float, end_brightness_pct | float(100)] | max }}"
+      end_255: "{{ ((end_pct | float) * 255 / 100) | round(0) | int }}"
+      interval_s: "{{ [step_interval_seconds | int(60), 5] | max }}"
+      total_steps: >-
+        {{ [1, (((duration_minutes | float(30)) * 60) / (interval_s | float)) | round(0, 'ceil') | int] | max }}
+      off_lights: "{{ target_lights | select('is_state', 'off') | list }}"
+
+  - alias: Pause conflicting automations if currently enabled
+    if:
+      - condition: template
+        value_template: "{{ paused_automations | count > 0 }}"
+    then:
+      - action: automation.turn_off
+        target:
+          entity_id: "{{ paused_automations }}"
+        data:
+          stop_actions: true
+
+  - alias: Turn on currently off lights at starting brightness
+    if:
+      - condition: template
+        value_template: "{{ off_lights | count > 0 }}"
+    then:
+      - action: light.turn_on
+        target:
+          entity_id: "{{ off_lights }}"
+        data:
+          brightness_pct: "{{ start_pct | round(0) | int }}"
+          transition: 1
+      - delay:
+          seconds: 1
+
+  - alias: Gradually brighten lights until target brightness is reached
+    repeat:
+      while:
+        - condition: template
+          value_template: "{{ repeat.index <= total_steps }}"
+        - condition: template
+          value_template: >-
+            {{ repeat.index == 1
+               or (not stop_if_turned_off)
+               or (target_lights | select('is_state', 'on') | list | count > 0) }}
+        - condition: template
+          value_template: >-
+            {% set active_lights = target_lights if (repeat.index == 1 or not stop_if_turned_off) else (target_lights | select('is_state', 'on') | list) %}
+            {% set ns = namespace(needs_more=false) %}
+            {% for l in active_lights %}
+              {% if (state_attr(l, 'brightness') | int(0)) < (end_255 - 1) %}
+                {% set ns.needs_more = true %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.needs_more }}
+      sequence:
+        - variables:
+            step_pct: >-
+              {{ (start_pct + (end_pct - start_pct) * repeat.index / total_steps) | round(0) | int }}
+            step_255: "{{ (step_pct * 255 / 100) | round(0) | int }}"
+            lights_to_brighten: >-
+              {% set active_lights = target_lights if (repeat.index == 1 or not stop_if_turned_off) else (target_lights | select('is_state', 'on') | list) %}
+              {% set ns = namespace(items=[]) %}
+              {% for l in active_lights %}
+                {% if (state_attr(l, 'brightness') | int(0)) < step_255 %}
+                  {% set ns.items = ns.items + [l] %}
+                {% endif %}
+              {% endfor %}
+              {{ ns.items }}
+        - alias: Brighten eligible lights for this step
+          if:
+            - condition: template
+              value_template: "{{ lights_to_brighten | count > 0 }}"
+          then:
+            - action: light.turn_on
+              target:
+                entity_id: "{{ lights_to_brighten }}"
+              data:
+                brightness_pct: "{{ step_pct }}"
+                transition: "{{ interval_s }}"
+        - delay:
+            seconds: "{{ interval_s }}"
+
+  - alias: Restore paused automations
+    if:
+      - condition: template
+        value_template: "{{ paused_automations | count > 0 }}"
+    then:
+      - action: automation.turn_on
+        target:
+          entity_id: "{{ paused_automations }}"
