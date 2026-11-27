@@ -53,6 +53,21 @@ Gradually brightens one or more lights ahead of an alarm sensor or time helper w
 - **Pause & Restore Automations**: Temporarily disables selected conflicting automations (such as auto-brightness) while the sunrise ramp runs and restores only those that were originally enabled afterward.
 - **Manual Override Protection**: Optionally stops ramping any light that is manually turned off during the sunrise.
 
+---
+
+### 4. Candlelight / Flame Flicker Effect (`automations/candlelight_flicker.yaml`)
+
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fharyp2309%2Fha-blueprints%2Fblob%2Fmain%2Fautomations%2Fcandlelight_flicker.yaml)
+
+Animates one or more lights with an organic candlelight or fireplace flickering effect while a switch helper (`input_boolean` or `switch`) is turned on, and restores their previous state when turned off.
+
+**Features:**
+- **Switch-Controlled Lifecycle**: Starts when the chosen switch helper turns `on` and exits immediately via `wait_for_trigger` when it turns `off`.
+- **Snapshot & Restore**: Captures each light's state via `scene.create` (`snapshot_entities`) before starting, smoothly restores all lights (including turning previously off lights back off) with `scene.turn_on`, and cleans up the temporary scene with `scene.delete`.
+- **Organic Flame Physics**: Uses a weighted intensity curve (70% gentle glow, 20% moderate flicker, 10% deep draft dip) paired with correlated hue/saturation or Kelvin warmth shifts and smooth transitions.
+- **Adaptive Light Support**: Automatically adapts to RGB/HS color lights (`candlelight`, `fireplace`, or `warm_white`), color-temperature lights (`color_temp_kelvin`), and brightness-only dimmable lights.
+- **Independent or Synchronized**: Choose whether each light flickers independently or all lights pulse together, plus optional pause/restore for conflicting automations (such as Adaptive Lighting).
+
 ## Manual Import Instructions
 
 1. In Home Assistant, go to **Settings** -> **Automations & Scenes** -> **Blueprints**.
