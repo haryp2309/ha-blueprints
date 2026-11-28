@@ -62,7 +62,7 @@ Gradually brightens one or more lights ahead of an alarm sensor or time helper w
 Syncs light colors to a media player's album art (such as Spotify) using Home Assistant's `color_extractor` integration with smooth transitions while keeping each light's brightness unchanged.
 
 **Features:**
-- **Switch-Controlled Snapshot & Restore**: Snapshots all target lights (expanding light groups) via `scene.create` before the first color change, and smoothly restores them to their original state (`scene.turn_on` + `scene.delete`) when the control switch helper turns `off`.
+- **Switch-Controlled Snapshot & Restore**: Snapshots all target lights (expanding light groups) via `scene.create` before the first color change, and smoothly restores them to their original state (`scene.turn_on` + `scene.delete`) when the control switch helper turns `off` or when playback pauses/stops (configurable via `reset_on_pause` and `pause_reset_delay_seconds`).
 - **Smooth Transitions & Preserved Brightness**: Configurable transition durations for both track/artwork color changes and state restoration, without passing `brightness` or `brightness_pct`.
 - **Smart Light & URL Handling**: Filters to color-capable lights when available, supports an option to only affect lights that are already `on`, and automatically handles both relative (`/api/media_player_proxy/...`) and absolute (`http://`/`https://`) `entity_picture` URLs.
 
