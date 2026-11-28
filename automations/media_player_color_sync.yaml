@@ -65,6 +65,20 @@ blueprint:
           step: 0.5
           unit_of_measurement: s
           mode: slider
+    debounce_seconds:
+      name: Artwork debounce delay
+      description: >-
+        Wait time (in seconds) for playback state or album artwork to settle
+        before changing colors, preventing multiple transitions during rapid
+        track skips or proxy URL refreshes.
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.5
+          unit_of_measurement: s
+          mode: slider
     only_affect_on_lights:
       name: Only affect lights that are currently on
       description: >-
@@ -84,7 +98,7 @@ blueprint:
         text:
 
 mode: queued
-max: 10
+max: 3
 max_exceeded: silent
 
 trigger:
@@ -100,10 +114,14 @@ trigger:
     platform: state
     entity_id: !input media_player
     to: "playing"
+    for:
+      seconds: !input debounce_seconds
   - id: artwork_changed
     platform: state
     entity_id: !input media_player
     attribute: entity_picture
+    for:
+      seconds: !input debounce_seconds
 
 variables:
   media_player: !input media_player
@@ -141,7 +159,15 @@ action:
       - alias: Sync light color from media artwork
         conditions:
           - condition: template
-            value_template: "{{ trigger.id in ['switch_on', 'media_playing', 'artwork_changed'] }}"
+            value_template: >-
+              {{ trigger.id in ['switch_on', 'media_playing']
+                 or (
+                   trigger.id == 'artwork_changed'
+                   and trigger.from_state is not none
+                   and trigger.to_state is not none
+                   and trigger.from_state.state == 'playing'
+                   and trigger.from_state.attributes.get('entity_picture') != trigger.to_state.attributes.get('entity_picture')
+                 ) }}
           - condition: state
             entity_id: !input toggle_switch
             state: "on"
@@ -161,21 +187,23 @@ action:
                 {% else %}
                   {{ (ha_base_url | default('http://127.0.0.1:8123', true)).rstrip('/') ~ raw_pic }}
                 {% endif %}
-              candidate_lights: >-
-                {{ expanded_lights | select('is_state', 'on') | list
-                   if only_affect_on_lights
-                   else expanded_lights | reject('is_state', 'unavailable') | reject('is_state', 'unknown') | list }}
-              color_capable_lights: >-
-                {% set ns = namespace(items=[]) %}
-                {% for l in candidate_lights %}
-                  {% set modes = state_attr(l, 'supported_color_modes') | default([], true) %}
-                  {% if (modes | select('in', ['hs', 'rgb', 'rgbw', 'rgbww', 'xy']) | list | count) > 0 %}
-                    {% set ns.items = ns.items + [l] %}
-                  {% endif %}
-                {% endfor %}
-                {{ ns.items if ns.items | count > 0 else candidate_lights }}
+              lights_to_sync: >-
+                {% if only_affect_on_lights %}
+                  {% set on_lights = expanded_lights | select('is_state', 'on') | list %}
+                  {% set ns = namespace(items=[]) %}
+                  {% for l in on_lights %}
+                    {% set modes = state_attr(l, 'supported_color_modes') | default([], true) %}
+                    {% if (modes | select('in', ['hs', 'rgb', 'rgbw', 'rgbww', 'xy']) | list | count) > 0 %}
+                      {% set ns.items = ns.items + [l] %}
+                    {% endif %}
+                  {% endfor %}
+                  {{ ns.items if ns.items | count > 0 else on_lights }}
+                {% else %}
+                  {% set targets = [target_lights] if target_lights is string else target_lights %}
+                  {{ targets | reject('is_state', 'unavailable') | reject('is_state', 'unknown') | list }}
+                {% endif %}
           - condition: template
-            value_template: "{{ color_capable_lights | count > 0 }}"
+            value_template: "{{ lights_to_sync | count > 0 }}"
           - alias: Snapshot original light states if not already snapshotted
             if:
               - condition: template
@@ -188,7 +216,7 @@ action:
           - alias: Apply extracted album art color with smooth transition
             action: color_extractor.turn_on
             target:
-              entity_id: "{{ color_capable_lights }}"
+              entity_id: "{{ lights_to_sync }}"
             data:
               color_extract_url: "{{ extract_url }}"
               transition: "{{ transition_seconds | float(2) }}"
