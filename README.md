@@ -53,6 +53,22 @@ Gradually brightens one or more lights ahead of an alarm sensor or time helper w
 - **Pause & Restore Automations**: Temporarily disables selected conflicting automations (such as auto-brightness) while the sunrise ramp runs and restores only those that were originally enabled afterward.
 - **Manual Override Protection**: Optionally stops ramping any light that is manually turned off during the sunrise.
 
+---
+
+### 4. Media Player Album Art Color Sync (`automations/media_player_color_sync.yaml`)
+
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fharyp2309%2Fha-blueprints%2Fblob%2Fmain%2Fautomations%2Fmedia_player_color_sync.yaml)
+
+Syncs light colors to a media player's album art (such as Spotify) using Home Assistant's `color_extractor` integration with smooth transitions while keeping each light's brightness unchanged.
+
+**Features:**
+- **Switch-Controlled Snapshot & Restore**: Snapshots all target lights (expanding light groups) via `scene.create` before the first color change, and smoothly restores them to their original state (`scene.turn_on` + `scene.delete`) when the control switch helper turns `off`.
+- **Smooth Transitions & Preserved Brightness**: Configurable transition durations for both track/artwork color changes and state restoration, without passing `brightness` or `brightness_pct`.
+- **Smart Light & URL Handling**: Filters to color-capable lights when available, supports an option to only affect lights that are already `on`, and automatically handles both relative (`/api/media_player_proxy/...`) and absolute (`http://`/`https://`) `entity_picture` URLs.
+
+> [!NOTE]
+> Requires the built-in Home Assistant [`color_extractor`](https://www.home-assistant.io/integrations/color_extractor/) integration, with your Home Assistant base URL (or external artwork domain) permitted under `allowlist_external_urls` in `configuration.yaml`.
+
 ## Manual Import Instructions
 
 1. In Home Assistant, go to **Settings** -> **Automations & Scenes** -> **Blueprints**.

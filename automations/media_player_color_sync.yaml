@@ -1,0 +1,194 @@
+blueprint:
+  name: Media Player Album Art Color Sync
+  description: >-
+    Syncs light colors to a media player's album art (such as Spotify) via the
+    Color Extractor integration with smooth transitions while preserving each
+    light's current brightness. Controlled by a switch helper that snapshots the
+    lights before the first color change and smoothly restores their original
+    state when turned off.
+  domain: automation
+  homeassistant:
+    min_version: "2024.8.0"
+  input:
+    media_player:
+      name: Media player
+      description: >-
+        Media player entity (e.g., Spotify) whose album artwork provides the
+        source color.
+      selector:
+        entity:
+          domain: media_player
+          multiple: false
+    target_lights:
+      name: Lights
+      description: >-
+        One or more lights or light groups to color-sync with the playing
+        media's album art.
+      selector:
+        entity:
+          domain: light
+          multiple: true
+    toggle_switch:
+      name: Control switch helper
+      description: >-
+        Switch or input_boolean helper that enables color syncing when on and
+        smoothly restores the lights to their previous state when turned off.
+      selector:
+        entity:
+          domain:
+            - input_boolean
+            - switch
+          multiple: false
+    transition_seconds:
+      name: Color transition duration
+      description: >-
+        Smooth transition duration (in seconds) when changing light colors to
+        match new album art.
+      default: 2
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 0.5
+          unit_of_measurement: s
+          mode: slider
+    restore_transition_seconds:
+      name: Restore transition duration
+      description: >-
+        Smooth transition duration (in seconds) when reverting lights back to
+        their original state after the switch is turned off.
+      default: 2
+      selector:
+        number:
+          min: 0
+          max: 30
+          step: 0.5
+          unit_of_measurement: s
+          mode: slider
+    only_affect_on_lights:
+      name: Only affect lights that are currently on
+      description: >-
+        When enabled, lights that are currently off will stay off instead of
+        being turned on when syncing colors.
+      default: false
+      selector:
+        boolean:
+    ha_base_url:
+      name: Home Assistant base URL
+      description: >-
+        Base URL prepended when the media player's entity_picture is a relative
+        path (e.g., /api/media_player_proxy/...). Ignored if entity_picture is
+        already an http:// or https:// URL.
+      default: "http://127.0.0.1:8123"
+      selector:
+        text:
+
+mode: queued
+max: 10
+max_exceeded: silent
+
+trigger:
+  - id: switch_on
+    platform: state
+    entity_id: !input toggle_switch
+    to: "on"
+  - id: switch_off
+    platform: state
+    entity_id: !input toggle_switch
+    to: "off"
+  - id: media_playing
+    platform: state
+    entity_id: !input media_player
+    to: "playing"
+  - id: artwork_changed
+    platform: state
+    entity_id: !input media_player
+    attribute: entity_picture
+
+variables:
+  media_player: !input media_player
+  target_lights: !input target_lights
+  toggle_switch: !input toggle_switch
+  transition_seconds: !input transition_seconds
+  restore_transition_seconds: !input restore_transition_seconds
+  only_affect_on_lights: !input only_affect_on_lights
+  ha_base_url: !input ha_base_url
+  snapshot_scene_id: >-
+    media_color_sync_{{ (this.entity_id | default('media_color_sync', true)) | replace('automation.', '') | slugify }}
+  snapshot_scene_entity: "scene.{{ snapshot_scene_id }}"
+  expanded_lights: "{{ expand(target_lights) | map(attribute='entity_id') | unique | list }}"
+  snapshot_exists: "{{ snapshot_scene_entity in (states.scene | map(attribute='entity_id') | list) }}"
+
+action:
+  - choose:
+      - alias: Revert lights when switch is turned off
+        conditions:
+          - condition: template
+            value_template: "{{ trigger.id == 'switch_off' }}"
+          - condition: template
+            value_template: "{{ snapshot_exists }}"
+        sequence:
+          - action: scene.turn_on
+            target:
+              entity_id: "{{ snapshot_scene_entity }}"
+            data:
+              transition: "{{ restore_transition_seconds | float(2) }}"
+          - action: scene.delete
+            target:
+              entity_id: "{{ snapshot_scene_entity }}"
+            continue_on_error: true
+
+      - alias: Sync light color from media artwork
+        conditions:
+          - condition: template
+            value_template: "{{ trigger.id in ['switch_on', 'media_playing', 'artwork_changed'] }}"
+          - condition: state
+            entity_id: !input toggle_switch
+            state: "on"
+          - condition: state
+            entity_id: !input media_player
+            state: "playing"
+          - condition: template
+            value_template: >-
+              {{ state_attr(media_player, 'entity_picture') is string
+                 and state_attr(media_player, 'entity_picture') != '' }}
+        sequence:
+          - variables:
+              raw_pic: "{{ state_attr(media_player, 'entity_picture') }}"
+              extract_url: >-
+                {% if raw_pic.startswith('http://') or raw_pic.startswith('https://') %}
+                  {{ raw_pic }}
+                {% else %}
+                  {{ (ha_base_url | default('http://127.0.0.1:8123', true)).rstrip('/') ~ raw_pic }}
+                {% endif %}
+              candidate_lights: >-
+                {{ expanded_lights | select('is_state', 'on') | list
+                   if only_affect_on_lights
+                   else expanded_lights | reject('is_state', 'unavailable') | reject('is_state', 'unknown') | list }}
+              color_capable_lights: >-
+                {% set ns = namespace(items=[]) %}
+                {% for l in candidate_lights %}
+                  {% set modes = state_attr(l, 'supported_color_modes') | default([], true) %}
+                  {% if (modes | select('in', ['hs', 'rgb', 'rgbw', 'rgbww', 'xy']) | list | count) > 0 %}
+                    {% set ns.items = ns.items + [l] %}
+                  {% endif %}
+                {% endfor %}
+                {{ ns.items if ns.items | count > 0 else candidate_lights }}
+          - condition: template
+            value_template: "{{ color_capable_lights | count > 0 }}"
+          - alias: Snapshot original light states if not already snapshotted
+            if:
+              - condition: template
+                value_template: "{{ not snapshot_exists }}"
+            then:
+              - action: scene.create
+                data:
+                  scene_id: "{{ snapshot_scene_id }}"
+                  snapshot_entities: "{{ expanded_lights }}"
+          - alias: Apply extracted album art color with smooth transition
+            action: color_extractor.turn_on
+            target:
+              entity_id: "{{ color_capable_lights }}"
+            data:
+              color_extract_url: "{{ extract_url }}"
+              transition: "{{ transition_seconds | float(2) }}"
